@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import quizRoutes from './routes/quizrouter';
-import { closeDatabase } from './config/db';
+import { connectMongo, closeDatabase } from './config/db';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -57,20 +57,26 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`🎉 Server is running successfully on port ${PORT}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-  console.log(`🤖 AI Assessment endpoint: http://localhost:${PORT}/api/ai-assessment/generate`);
-  console.log(`✅ Backend ready to receive requests!`);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('Shutting down gracefully...');
-  server.close(() => {
-    closeDatabase();
-    process.exit(0);
+// Connect to MongoDB and then start server
+connectMongo().then(() => {
+  const server = app.listen(PORT, () => {
+    console.log(`🎉 Server is running successfully on port ${PORT}`);
+    console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+    console.log(`🤖 AI Assessment endpoint: http://localhost:${PORT}/api/ai-assessment/generate`);
+    console.log(`✅ Backend ready to receive requests!`);
   });
+
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    console.log('Shutting down gracefully...');
+    server.close(async () => {
+      await closeDatabase();
+      process.exit(0);
+    });
+  });
+}).catch((err) => {
+  console.error('Failed to connect to MongoDB. Server not started.', err);
+  process.exit(1);
 });
 
 export default app;

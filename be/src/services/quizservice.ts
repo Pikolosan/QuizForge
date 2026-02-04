@@ -140,7 +140,7 @@ export class QuizService {
       { $project: { username: '$user.username', email: '$user.email', score_percentage: 1, correct_answers: 1, total_questions: 1, created_at: 1 } }
     ];
 
-    const rows: any[] = await AttemptModel.aggregate(pipeline).exec();
+    const rows: any[] = await AttemptModel.aggregate(pipeline as any).exec();
     return rows.map((r, idx) => ({ rank: idx + 1, username: r.username, email: r.email, score_percentage: r.score_percentage, correct_answers: r.correct_answers, total_questions: r.total_questions, created_at: r.created_at }));
   }
 
@@ -182,6 +182,23 @@ export class QuizService {
     });
     await Promise.all(qPromises);
     return id;
+  }
+
+  /** Create a quiz manually (admin/admin panel) */
+  static async createQuiz(title: string, description: string, category: string, level: string): Promise<number> {
+    const id = await getNextSequence('quizzes');
+    const created = await QuizModel.create({ id, title, description: description || '', category, level });
+    return created.id;
+  }
+
+  /** Add a question to an existing quiz */
+  static async addQuestion(quizId: number, payload: { question_text: string; option_a: string; option_b: string; option_c: string; option_d: string; correct_option: string }): Promise<number> {
+    // Ensure quiz exists
+    const quiz = await QuizModel.findOne({ id: quizId }).exec();
+    if (!quiz) throw new Error('Quiz not found');
+    const qId = await getNextSequence('questions');
+    const created = await QuestionModel.create({ id: qId, quiz_id: quizId, question_text: payload.question_text, option_a: payload.option_a, option_b: payload.option_b, option_c: payload.option_c, option_d: payload.option_d, correct_option: payload.correct_option });
+    return created.id;
   }
 
   /** Generate static questions based on topic and difficulty */

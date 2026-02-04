@@ -156,17 +156,14 @@ export class QuizController {
         res.status(400).json({ error: 'title, category and level are required' });
         return;
       }
-      const sql = `INSERT INTO quizzes (title, description, category, level) VALUES (?, ?, ?, ?)`;
-      const params = [title, description || '', category, level];
-      const { db } = await import('../config/db');
-      (db as any).run(sql, params, function (this: { lastID: number }, err: any) {
-        if (err) {
-          res.status(500).json({ error: 'Failed to create quiz' });
-          return;
-        }
-        const lastID = this.lastID;
-        res.status(201).json({ id: lastID });
-      });
+
+      try {
+        const id = await QuizService.createQuiz(title, description || '', category, level);
+        res.status(201).json({ id });
+      } catch (err) {
+        console.error('Failed to create quiz:', err);
+        res.status(500).json({ error: 'Failed to create quiz' });
+      }
     } catch (error) {
       res.status(500).json({ error: 'Failed to create quiz' });
     }
@@ -184,17 +181,15 @@ export class QuizController {
         res.status(400).json({ error: 'Invalid payload' });
         return;
       }
-      const sql = `INSERT INTO questions (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-      const params = [quizId, question_text, option_a, option_b, option_c, option_d, correct_option];
-      const { db } = await import('../config/db');
-      (db as any).run(sql, params, function (this: { lastID: number }, err: any) {
-        if (err) {
-          res.status(500).json({ error: 'Failed to add question' });
-          return;
-        }
-        const lastID = this.lastID;
-        res.status(201).json({ id: lastID });
-      });
+
+      try {
+        const id = await QuizService.addQuestion(quizId, { question_text, option_a, option_b, option_c, option_d, correct_option });
+        res.status(201).json({ id });
+      } catch (err) {
+        console.error('Failed to add question:', err);
+        const msg = (err as any)?.message || 'Failed to add question';
+        res.status(500).json({ error: msg });
+      }
     } catch (error) {
       res.status(500).json({ error: 'Failed to add question' });
     }
