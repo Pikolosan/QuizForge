@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: quiz-backend
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run dev
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: GEMINI_API_KEY
+        value: ${GEMINI_API_KEY}
+      - key: DB_PATH
+        value: ./quiz.db
+    ports:
+      - 3001:3001
+    healthCheck:
+      path: /health
+      interval: 30s
+      timeout: 10s
+      retries: 3

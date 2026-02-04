@@ -1,0 +1,17 @@
+# Node / NPM
+node_modules/
+npm-debug.log*
+
+# Build outputs
+dist/
+
+# Coverage
+coverage/
+
+# Environment files
+.env
+
+# SQLite database (local development)
+quiz.db
+
+

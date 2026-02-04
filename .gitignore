@@ -1,0 +1,34 @@
+# Node / PNPM / NPM
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+be/dist/
+frontend/dist/
+
+# Coverage
+be/coverage/
+
+# Environment files
+.env
+.env.*
+be/.env
+frontend/.env
+frontend/.env.*
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# SQLite database
+be/quiz.db
+
+
+be/coverage
+be/dist
