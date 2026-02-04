@@ -1,110 +1,40 @@
-// SQLite setup and bootstrapping
-import sqlite3 from 'sqlite3';
-import path from 'path';
+// MongoDB (Mongoose) setup
+import mongoose from 'mongoose';
 
-// Pick DB file from env or use a sensible default
-const dbPath = process.env.DB_PATH || path.join(__dirname, '../../quiz.db');
+const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL;
 
-/**
- * Shared SQLite connection. We kick off schema setup on connect.
- */
-export const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error opening database:', err);
-  } else {
-    console.log('Connected to SQLite database');
-    initializeDatabase();
-  }
-});
-
-/**
- * Create tables if they're missing.
- */
-function initializeDatabase() {
-  db.serialize(() => {
-    // Quizzes table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS quizzes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        description TEXT,
-        category TEXT,
-        level TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Best-effort migration for existing databases
-    db.run(`ALTER TABLE quizzes ADD COLUMN category TEXT`, (err) => {
-      if (err && !err.message.includes('duplicate column name')) {
-        console.error('Error adding category column:', err);
-      }
-    });
-    db.run(`ALTER TABLE quizzes ADD COLUMN level TEXT`, (err) => {
-      if (err && !err.message.includes('duplicate column name')) {
-        console.error('Error adding level column:', err);
-      }
-    });
-
-    // Questions table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        quiz_id INTEGER NOT NULL,
-        question_text TEXT NOT NULL,
-        option_a TEXT NOT NULL,
-        option_b TEXT NOT NULL,
-        option_c TEXT NOT NULL,
-        option_d TEXT NOT NULL,
-        correct_option TEXT NOT NULL CHECK(correct_option IN ('A', 'B', 'C', 'D')),
-        explanation TEXT,
-        FOREIGN KEY (quiz_id) REFERENCES quizzes(id)
-      )
-    `);
-
-    // Add explanation column to existing questions table
-    db.run(`ALTER TABLE questions ADD COLUMN explanation TEXT`, (err) => {
-      if (err && !err.message.includes('duplicate column name')) {
-        console.error('Error adding explanation column:', err);
-      }
-    });
-
-    // Users table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Attempts table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS attempts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        quiz_id INTEGER NOT NULL,
-        total_questions INTEGER NOT NULL,
-        correct_answers INTEGER NOT NULL,
-        score_percentage INTEGER NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (quiz_id) REFERENCES quizzes(id)
-      )
-    `);
-  });
+if (!mongoUri) {
+  console.warn('⚠️  MONGO_URI not set. The app will attempt to run without a MongoDB connection. For production, set MONGO_URI to your MongoDB connection string.');
 }
 
+export const connectMongo = async () => {
+  if (!mongoUri) return;
+  try {
+    await mongoose.connect(mongoUri, {
+      // Recommended options
+      // useNewUrlParser and useUnifiedTopology are defaults in modern mongoose
+    });
+    console.log('✅ Connected to MongoDB');
+  } catch (err) {
+    console.error('❌ Error connecting to MongoDB:', err);
+    throw err;
+  }
+};
+
 /**
- * Close the DB connection politely.
+ * Simple counter collection for generating sequential numeric IDs (legacy-friendly)
  */
-export const closeDatabase = () => {
-  db.close((err) => {
-    if (err) {
-      console.error('Error closing database:', err);
-    } else {
-      console.log('Database connection closed');
-    }
-  });
+export const getNextSequence = async (name: string): Promise<number> => {
+  const Counter = mongoose.models.Counter || mongoose.model('Counter', new mongoose.Schema({ _id: String, seq: { type: Number, default: 0 } }), 'counters');
+  const doc = await Counter.findOneAndUpdate({ _id: name }, { $inc: { seq: 1 } }, { upsert: true, new: true }).exec();
+  return doc.seq;
+};
+
+export const closeDatabase = async () => {
+  try {
+    await mongoose.disconnect();
+    console.log('MongoDB connection closed');
+  } catch (err) {
+    console.error('Error closing MongoDB connection:', err);
+  }
 };

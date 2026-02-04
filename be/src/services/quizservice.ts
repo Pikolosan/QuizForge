@@ -1,388 +1,187 @@
-import { db } from '../config/db'
-import { Question, QuestionResponse, QuizSubmission, QuizResult, UserInfo, AttemptRecord } from '../models/quizmodel';
 import { getGeminiService } from './geminiService';
 import { AIQuizRequest } from '../schemas/aiQuizSchema';
+import { QuizModel, QuestionModel, UserModel, AttemptModel } from '../models/mongoModels';
+import { getNextSequence } from '../config/db';
+import { QuestionResponse, QuizSubmission, QuizResult, UserInfo, AttemptRecord } from '../models/quizmodel';
 
 /**
- * Quiz domain logic: data access + scoring.
+ * Quiz domain logic: now backed by MongoDB (mongoose)
  */
 export class QuizService {
   /** Upsert user by email; returns user id. */
-  static upsertUser(user: UserInfo): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const findSql = 'SELECT id FROM users WHERE email = ?';
-      db.get(findSql, [user.email], (findErr, row: { id: number } | undefined) => {
-        if (findErr) {
-          reject(findErr);
-          return;
-        }
-        if (row && typeof row.id === 'number') {
-          // Update username if changed
-          const updateSql = 'UPDATE users SET username = ? WHERE id = ?';
-          db.run(updateSql, [user.username, row.id], (updErr) => {
-            if (updErr) {
-              reject(updErr);
-              return;
-            }
-            resolve(row.id);
-          });
-          return;
-        }
-        const insertSql = 'INSERT INTO users (username, email) VALUES (?, ?)';
-        db.run(insertSql, [user.username, user.email], function (insErr) {
-          if (insErr) {
-            reject(insErr);
-            return;
-          }
-          resolve(this.lastID);
-        });
-      });
-    });
+  static async upsertUser(user: UserInfo): Promise<number> {
+    const existing = await UserModel.findOne({ email: user.email }).exec();
+    if (existing) {
+      if (existing.username !== user.username) {
+        existing.username = user.username;
+        await existing.save();
+      }
+      return existing.id;
+    }
+    const id = await getNextSequence('users');
+    const created = await UserModel.create({ id, username: user.username, email: user.email });
+    return created.id;
   }
+
   /** Fetch questions for a quiz (no correct answers). */
-  static getQuestions(quizId: number): Promise<QuestionResponse[]> {
-    return new Promise((resolve, reject) => {
-      const query = `SELECT id, question_text, option_a, option_b, option_c, option_d 
-                     FROM questions WHERE quiz_id = ?`;
-      
-      db.all(query, [quizId], (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-
-        const questions: QuestionResponse[] = rows.map((row) => ({
-          id: row.id,
-          question_text: row.question_text,
-          options: {
-            A: row.option_a,
-            B: row.option_b,
-            C: row.option_c,
-            D: row.option_d,
-          },
-        }));
-
-        resolve(questions);
-      });
-    });
+  static async getQuestions(quizId: number): Promise<QuestionResponse[]> {
+    const rows = await QuestionModel.find({ quiz_id: quizId }).select('id question_text option_a option_b option_c option_d -_id').exec();
+    return rows.map((row: any) => ({
+      id: row.id,
+      question_text: row.question_text,
+      options: {
+        A: row.option_a,
+        B: row.option_b,
+        C: row.option_c,
+        D: row.option_d,
+      }
+    }));
   }
 
   /** Fetch questions with explanations for results display */
-  static getQuestionsWithExplanations(quizId: number): Promise<Array<{
-    id: number;
-    question_text: string;
-    options: { A: string; B: string; C: string; D: string };
-    correct_option: string;
-    explanation?: string;
-  }>> {
-    return new Promise((resolve, reject) => {
-      const query = `SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation 
-                     FROM questions WHERE quiz_id = ?`;
-      
-      db.all(query, [quizId], (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-
-        const questions = rows.map((row) => ({
-          id: row.id,
-          question_text: row.question_text,
-          options: {
-            A: row.option_a,
-            B: row.option_b,
-            C: row.option_c,
-            D: row.option_d,
-          },
-          correct_option: row.correct_option,
-          explanation: row.explanation,
-        }));
-
-        resolve(questions);
-      });
-    });
+  static async getQuestionsWithExplanations(quizId: number) {
+    const rows = await QuestionModel.find({ quiz_id: quizId }).select('id question_text option_a option_b option_c option_d correct_option explanation -_id').exec();
+    return rows.map((row: any) => ({
+      id: row.id,
+      question_text: row.question_text,
+      options: {
+        A: row.option_a,
+        B: row.option_b,
+        C: row.option_c,
+        D: row.option_d,
+      },
+      correct_option: row.correct_option,
+      explanation: row.explanation,
+    }));
   }
 
-  /** List quizzes, optionally filtered by category. */
-  static listQuizzes(category?: string, level?: string): Promise<{ id: number; title: string; description: string; category: string | null; level: string | null }[]> {
-    return new Promise((resolve, reject) => {
-      const base = `SELECT id, title, description, category, level FROM quizzes`;
-      let where = [] as string[];
-      const params = [] as any[];
-      if (category) { where.push('category = ?'); params.push(category); }
-      if (level) { where.push('level = ?'); params.push(level); }
-      const sql = where.length ? `${base} WHERE ${where.join(' AND ')} ORDER BY created_at DESC` : `${base} ORDER BY created_at DESC`;
-      db.all(sql, params, (err, rows: { id: number; title: string; description: string; category: string | null; level: string | null }[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(rows || []);
-      });
-    });
+  /** List quizzes, optionally filtered by category/level. */
+  static async listQuizzes(category?: string, level?: string) {
+    const filter: any = {};
+    if (category) filter.category = category;
+    if (level) filter.level = level;
+    const rows = await QuizModel.find(filter).sort({ created_at: -1 }).select('id title description category level -_id').exec();
+    return rows;
   }
 
   /** Score a submission and optionally include per-question details. */
-  static calculateScore(quizId: number, submission: QuizSubmission, includeDetails: boolean = false): Promise<QuizResult> {
-    return new Promise((resolve, reject) => {
-      const query = `SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation 
-                     FROM questions WHERE quiz_id = ?`;
-      
-      db.all(query, [quizId], (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+  static async calculateScore(quizId: number, submission: QuizSubmission, includeDetails: boolean = false): Promise<QuizResult> {
+    const rows = await QuestionModel.find({ quiz_id: quizId }).exec();
 
-        if (rows.length === 0) {
-          reject(new Error('No questions found for this quiz'));
-          return;
-        }
+    if (!rows || rows.length === 0) throw new Error('No questions found for this quiz');
 
-        let correctCount = 0;
-        const details = [];
+    let correctCount = 0;
+    const details: any[] = [];
 
-        // Quick lookup for user answers
-        const answerMap = new Map(
-          submission.answers.map((a) => [a.question_id, a.selected_option])
-        );
+    const answerMap = new Map(submission.answers.map((a) => [a.question_id, a.selected_option]));
 
-        for (const question of rows) {
-          const userAnswer = answerMap.get(question.id);
-          const isCorrect = userAnswer === question.correct_option;
+    for (const question of rows) {
+      const userAnswer = answerMap.get(question.id);
+      const isCorrect = userAnswer === question.correct_option;
+      if (isCorrect) correctCount++;
 
-          if (isCorrect) {
-            correctCount++;
-          }
+      if (includeDetails) {
+        const optionKey = `option_${question.correct_option.toLowerCase()}`;
+        const userOptionKey = userAnswer ? `option_${userAnswer.toLowerCase()}` : null;
+        details.push({
+          question_id: question.id,
+          question_text: question.question_text,
+          user_answer: userAnswer && userOptionKey ? (question as any)[userOptionKey] : 'Not answered',
+          correct_answer: (question as any)[optionKey],
+          is_correct: isCorrect,
+          explanation: question.explanation || undefined,
+        });
+      }
+    }
 
-          if (includeDetails) {
-            const optionKey = `option_${question.correct_option.toLowerCase()}`;
-            const userOptionKey = userAnswer ? `option_${userAnswer.toLowerCase()}` : null;
+    const result: QuizResult = {
+      total_questions: rows.length,
+      correct_answers: correctCount,
+      score_percentage: Math.round((correctCount / rows.length) * 100),
+    };
 
-            details.push({
-              question_id: question.id,
-              question_text: question.question_text,
-              user_answer: userAnswer && userOptionKey ? String(question[userOptionKey]) : 'Not answered',
-              correct_answer: String(question[optionKey]),
-              is_correct: isCorrect,
-              explanation: question.explanation || undefined,
-            });
-          }
-        }
+    if (includeDetails) result.details = details;
 
-        const result: QuizResult = {
-          total_questions: rows.length,
-          correct_answers: correctCount,
-          score_percentage: Math.round((correctCount / rows.length) * 100),
-        };
-
-        if (includeDetails) {
-          result.details = details;
-        }
-
-        resolve(result);
-      });
-    });
+    return result;
   }
 
   /** Record an attempt for a user+quiz. Returns attempt id. */
-  static recordAttempt(userId: number, quizId: number, result: QuizResult): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const sql = `INSERT INTO attempts (user_id, quiz_id, total_questions, correct_answers, score_percentage)
-                   VALUES (?, ?, ?, ?, ?)`;
-      db.run(
-        sql,
-        [userId, quizId, result.total_questions, result.correct_answers, result.score_percentage],
-        function (err) {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(this.lastID);
-        }
-      );
-    });
+  static async recordAttempt(userId: number, quizId: number, result: QuizResult): Promise<number> {
+    const id = await getNextSequence('attempts');
+    const created = await AttemptModel.create({ id, user_id: userId, quiz_id: quizId, total_questions: result.total_questions, correct_answers: result.correct_answers, score_percentage: result.score_percentage });
+    return created.id;
   }
 
   /** Fetch attempts for a given user and quiz. */
-  static getAttempts(userEmail: string, quizId?: number): Promise<AttemptRecord[]> {
-    return new Promise((resolve, reject) => {
-      const sqlBase = `
-        SELECT a.id, a.user_id, a.quiz_id, a.total_questions, a.correct_answers, a.score_percentage, a.created_at
-        FROM attempts a
-        JOIN users u ON u.id = a.user_id
-        WHERE u.email = ?
-      `;
-      const params: any[] = [userEmail];
-      const sql = quizId ? sqlBase + ' AND a.quiz_id = ? ORDER BY a.created_at DESC' : sqlBase + ' ORDER BY a.created_at DESC';
-      if (quizId) params.push(quizId);
-      db.all(sql, params, (err, rows: AttemptRecord[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(rows || []);
-      });
-    });
+  static async getAttempts(userEmail: string, quizId?: number): Promise<AttemptRecord[]> {
+    const user = await UserModel.findOne({ email: userEmail }).exec();
+    if (!user) return [];
+    const filter: any = { user_id: user.id };
+    if (quizId) filter.quiz_id = quizId;
+    const rows = await AttemptModel.find(filter).sort({ created_at: -1 }).exec();
+    return rows as any;
   }
 
   /** Check if a quiz exists by ID. */
-  static quizExists(quizId: number): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-      db.get('SELECT id FROM quizzes WHERE id = ?', [quizId], (err, row) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(!!row);
-      });
-    });
+  static async quizExists(quizId: number): Promise<boolean> {
+    const q = await QuizModel.findOne({ id: quizId }).exec();
+    return !!q;
   }
 
   /** Leaderboard for a quiz: highest score first, newest first on ties */
-  static getLeaderboard(quizId: number, limit: number = 10): Promise<Array<{
-    rank: number;
-    username: string;
-    email: string;
-    score_percentage: number;
-    correct_answers: number;
-    total_questions: number;
-    created_at: string;
-  }>> {
-    return new Promise((resolve, reject) => {
-      const sql = `
-        SELECT u.username, u.email, a.score_percentage, a.correct_answers, a.total_questions, a.created_at
-        FROM attempts a
-        JOIN users u ON u.id = a.user_id
-        WHERE a.quiz_id = ?
-        ORDER BY a.score_percentage DESC, a.created_at DESC
-        LIMIT ?`;
+  static async getLeaderboard(quizId: number, limit: number = 10) {
+    // Use aggregation to join attempts with users
+    const pipeline = [
+      { $match: { quiz_id: quizId } },
+      { $sort: { score_percentage: -1, created_at: -1 } },
+      { $limit: limit },
+      { $lookup: { from: 'users', localField: 'user_id', foreignField: 'id', as: 'user' } },
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      { $project: { username: '$user.username', email: '$user.email', score_percentage: 1, correct_answers: 1, total_questions: 1, created_at: 1 } }
+    ];
 
-      db.all(sql, [quizId, limit], (err, rows: any[]) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        const ranked = (rows || []).map((r, idx) => ({
-          rank: idx + 1,
-          username: r.username,
-          email: r.email,
-          score_percentage: r.score_percentage,
-          correct_answers: r.correct_answers,
-          total_questions: r.total_questions,
-          created_at: r.created_at,
-        }));
-        resolve(ranked);
-      });
-    });
+    const rows: any[] = await AttemptModel.aggregate(pipeline).exec();
+    return rows.map((r, idx) => ({ rank: idx + 1, username: r.username, email: r.email, score_percentage: r.score_percentage, correct_answers: r.correct_answers, total_questions: r.total_questions, created_at: r.created_at }));
   }
 
   /** Generate AI quiz using Gemini AI */
   static async generateAIQuiz(topic: string, difficulty: string, questionCount: number): Promise<number> {
-    try {
-      // Validate input using Zod
-      const request: AIQuizRequest = {
-        topic,
-        difficulty: difficulty as 'easy' | 'medium' | 'hard',
-        questionCount
-      };
-      
-      // Get AI-generated questions
-      const geminiService = getGeminiService();
-      const aiResponse = await geminiService.generateQuizQuestions(request);
-      
-      // Create the quiz in database
-      const quizId = await QuizService.createQuizWithAIQuestions(topic, difficulty, aiResponse.questions);
-      
-      return quizId;
-    } catch (error) {
-      console.error('Error generating AI quiz:', error);
-      throw error;
-    }
+    const request: AIQuizRequest = { topic, difficulty: difficulty as 'easy'|'medium'|'hard', questionCount };
+    const geminiService = getGeminiService();
+    const aiResponse = await geminiService.generateQuizQuestions(request);
+    const quizId = await QuizService.createQuizWithAIQuestions(topic, difficulty, aiResponse.questions);
+    return quizId;
   }
 
   /** Create quiz and insert AI-generated questions */
   private static async createQuizWithAIQuestions(topic: string, difficulty: string, questions: any[]): Promise<number> {
-    return new Promise((resolve, reject) => {
-      // First create the quiz
-      const title = `AI Assessment: ${topic} (${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)})`;
-      const description = `AI-generated ${difficulty} level assessment on ${topic}`;
-      
-      const createQuizSql = `INSERT INTO quizzes (title, description, category, level) VALUES (?, ?, ?, ?)`;
-      db.run(createQuizSql, [title, description, 'ai-generated', difficulty], function (err) {
-        if (err) {
-          reject(err);
-          return;
-        }
-        
-        const quizId = this.lastID;
-        
-        // Insert all AI-generated questions
-        const insertPromises = questions.map(q => {
-          return new Promise<void>((resolveQ, rejectQ) => {
-            const insertQuestionSql = `INSERT INTO questions (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-            db.run(insertQuestionSql, [
-              quizId, 
-              q.question, 
-              q.options.A, 
-              q.options.B, 
-              q.options.C, 
-              q.options.D, 
-              q.correct_answer,
-              q.explanation
-            ], (qErr) => {
-              if (qErr) {
-                rejectQ(qErr);
-                return;
-              }
-              resolveQ();
-            });
-          });
-        });
-        
-        Promise.all(insertPromises)
-          .then(() => resolve(quizId))
-          .catch(reject);
-      });
+    const title = `AI Assessment: ${topic} (${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)})`;
+    const description = `AI-generated ${difficulty} level assessment on ${topic}`;
+    const id = await getNextSequence('quizzes');
+    await QuizModel.create({ id, title, description, category: 'ai-generated', level: difficulty });
+
+    const qPromises = questions.map(async (q: any) => {
+      const qId = await getNextSequence('questions');
+      await QuestionModel.create({ id: qId, quiz_id: id, question_text: q.question, option_a: q.options.A, option_b: q.options.B, option_c: q.options.C, option_d: q.options.D, correct_option: q.correct_answer, explanation: q.explanation });
     });
+    await Promise.all(qPromises);
+    return id;
   }
 
   /** Fallback to static questions if AI fails */
   static async generateStaticQuiz(topic: string, difficulty: string, questionCount: number): Promise<number> {
-    return new Promise((resolve, reject) => {
-      // First create the quiz
-      const title = `Assessment: ${topic} (${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)})`;
-      const description = `${difficulty} level assessment on ${topic}`;
-      
-      const createQuizSql = `INSERT INTO quizzes (title, description, category, level) VALUES (?, ?, ?, ?)`;
-      db.run(createQuizSql, [title, description, 'static-generated', difficulty], function (err) {
-        if (err) {
-          reject(err);
-          return;
-        }
-        
-        const quizId = this.lastID;
-        const questions = QuizService.generateStaticQuestions(topic, difficulty, questionCount);
-        
-        // Insert all questions
-        const insertPromises = questions.map(q => {
-          return new Promise<void>((resolveQ, rejectQ) => {
-            const insertQuestionSql = `INSERT INTO questions (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_option) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-            db.run(insertQuestionSql, [quizId, q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option], (qErr) => {
-              if (qErr) {
-                rejectQ(qErr);
-                return;
-              }
-              resolveQ();
-            });
-          });
-        });
-        
-        Promise.all(insertPromises)
-          .then(() => resolve(quizId))
-          .catch(reject);
-      });
+    const title = `Assessment: ${topic} (${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)})`;
+    const description = `${difficulty} level assessment on ${topic}`;
+    const id = await getNextSequence('quizzes');
+    await QuizModel.create({ id, title, description, category: 'static-generated', level: difficulty });
+
+    const questions = QuizService.generateStaticQuestions(topic, difficulty, questionCount);
+    const qPromises = questions.map(async (q) => {
+      const qId = await getNextSequence('questions');
+      await QuestionModel.create({ id: qId, quiz_id: id, question_text: q.question_text, option_a: q.option_a, option_b: q.option_b, option_c: q.option_c, option_d: q.option_d, correct_option: q.correct_option });
     });
+    await Promise.all(qPromises);
+    return id;
   }
 
   /** Generate static questions based on topic and difficulty */
