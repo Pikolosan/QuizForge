@@ -16,13 +16,32 @@ const PORT = process.env.PORT || 3001;
 console.log(`🌐 Server will run on port: ${PORT}`);
 
 // CORS Configuration - MUST be before other middleware
+// Read allowed origins from environment (comma-separated) for flexibility in deploys
+const defaultOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://nebulaquiz.vercel.app',
+  'https://online-quiz-application-1.onrender.com'
+];
+const envOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URLS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+
+console.log('🔐 CORS allowed origins:', allowedOrigins);
+
+// Use a function so we always reflect the exact Origin header when it matches our list
 const corsOptions = {
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://nebulaquiz.vercel.app', // Replace with your actual Vercel URL
-    'https://online-quiz-application-1.onrender.com'
-  ],
+  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+    // Allow requests with no origin (server-to-server, curl, Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('CORS policy: Origin not allowed'), false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
